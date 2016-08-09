@@ -22,7 +22,10 @@ You will receive push notifications about nearby Pokemon without running any app
 5. Run `server.js`
 6. Start the iOS application (see the client's README for details)
 
-You will receive a push notification when an intereting Pokemon is nearby.
+You will receive a push notification when an intereting Pokemon is nearby. Please be aware that the server is designed to connect to exactly 1 client, so it can't supply multiple iOS devices.
+
+## A word about security
+This is a fun project and security is not built in. There is no authentication, so in theory everybody that knows you are running this server might send spoof locations and stuff to it. I don't that this can do any harm, except not working as expected, but you never know.
 
 ## Thanks
 Thanks to the people that created  the [Pokemon Go Node API](https://github.com/Armax/Pokemon-GO-node-api) and everybody involved in cracking the API!
