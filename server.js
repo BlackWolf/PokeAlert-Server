@@ -1,39 +1,62 @@
+/** 
+ * Port the HTTP server providing the REST API runs on 
+ */
 var SERVER_PORT = 8888;
 
-var POKEMON_LOGIN_TYPE = 'google'; // 'google' or 'ptc'
+/** Service to use for logging into google server. Must be either 'google'
+ * or 'ptc'
+ */
+var POKEMON_LOGIN_TYPE = '';
 
+/**
+ * Login name of either the Pokemon server login
+ */
 var POKEMON_LOGIN_NAME = '';
 
+/**
+ * Password for the Pokemon server login
+ */
 var POKEMON_LOGIN_PASSWORD = '';
 
-/** Interval in which pokemon can be searched, in ms. Depending on current
-    user movement, a search may be delayed up to POKEMON_MAX_SEARCH_INTERVAL
-    ms */
-var POKEMON_SEARCH_CHECK_INTERVAL = 5000;
+/**
+ * Minimum time between two Pokemon searches, in ms. The actual time will 
+ * depend on how much the user moves (more movement = more searches). 
+ */
+var POKEMON_MIN_SEARCH_INTERVAL = 30000;
 
-/** The maximum time between two pokemon searches, even if the user does not
-    move */
+/**
+ * Maximum time between two Pokemon searches, in ms. The actual time will 
+ * depend on how much the user moves (more movement = more searches). 
+ */
 var POKEMON_MAX_SEARCH_INTERVAL = 360000;
 
-/** The total radius around the user to search for pokemon. This is the base
-    radius, it might be enlarged or shrunk based on user movement. Note that
-    increasing this can heavily increase the number of heartbeats send to the
-    pokemon servers at seach. */
-var POKEMON_SEARCH_RADIUS = 600;
+/**
+ * Radius to search for Pokemon around the user if the user is stationary 
+ * (e.g. is at home or a restaurant), in meters.
+ * Combined with POKEMON_STATIONARY_SEARCH_CELLSIZE this defines how many
+ * requests are sent to the Pokemon server for a stationary search. Since
+ * the Pokemon server requires a 5s delay between each request, it should be
+ * made sure we don't send too many requests.
+ */
+var POKEMON_STATIONARY_SEARCH_RADIUS = 50;
 
-/** The smallest size of one "cell" when searching pokemon. One cell represents
-    one heartbeat sent to the pokemon servers. The smaller the cells, the more
-    we need to cover POKEMON_SEARCH_RADIUS. Cell size is adjusted between this
-    and POKEMON_MAX_SEARCH_CELL_SIZE based on user movement */
-var POKEMON_MIN_SEARCH_CELL_SIZE = 100;
+/**
+ * Radius to search for Pokemon around the user if the user is moving 
+ * (e.g. walking or on a bike), in meters.
+ * Combined with POKEMON_MOVING_SEARCH_CELLSIZE this defines how many
+ * requests are sent to the Pokemon server for a moving search. Since
+ * the Pokemon server requires a 5s delay between each request, it should be
+ * made sure we don't send too many requests.
+ */
+var POKEMON_MOVING_SEARCH_RADIUS = 500;
 
-/** The largest size of one "cell" when searching pokemon. One cell represents
-    one heartbeat sent to the pokemon servers. The smaller the cells, the more
-    we need to cover POKEMON_SEARCH_RADIUS. Cell size is adjusted between this
-    and POKEMON_MIN_SEARCH_CELL_SIZE based on user movement */
-var POKEMON_MAX_SEARCH_CELL_SIZE = 250;
+var POKEMON_STATIONARY_SEARCH_CELLSIZE = 100;
 
-/** A list of pokedex numbers of pokemon we do not want to be informed of. */
+var POKEMON_MOVING_SEARCH_CELLSIZE = 250;
+
+/** 
+ * An array of pokedex numbers of pokemon we do not want to be informed of. 
+ */
 var IGNORED_POKEMON = [
   10, //caterpie
   11, //metapod
@@ -60,11 +83,16 @@ var IGNORED_POKEMON = [
   97, //hypno
   98, //krabby
   99, //kingler
+  118, //goldeen
+  119, //seaking
+  120, //staryu
+  121, //starmie
 ];
 
-/** A list of pokedex numbers of pokemon we DEFINETLY want to catch and should
-    be made aware of repeatedly. This list is pretty much personal taste,
-    I mostly entered stuff I still need */
+/** 
+ * A list of pokedex numbers of pokemon we DEFINETLY want to catch and should
+ * receive special treatment. 
+ */
 var NICE_POKEMON = [
   1, //bulbausar
   2, //ivysaur
@@ -128,8 +156,6 @@ var NICE_POKEMON = [
   114, //tangela
   115, //kangaskhan
   117, //seadra
-  119, //seaking
-  121, //starmie
   123, //scyther
   124, //jynx
   126, //magmar
@@ -156,9 +182,11 @@ var NICE_POKEMON = [
   151, //mew
 ];
 
-/** A list of pokedex numbers of pokemon that are supposed to be uncatchable.
-    Seeing one of those we want to be notified ALL THE TIME, drop everything,
-    crash the car and CATCH IT! */
+/** 
+ * A list of pokedex numbers of pokemon that are supposed to be uncatchable.
+ * Seeing one of those we want to be notified ALL THE TIME, drop everything,
+ * crash the car and CATCH IT! 
+ */
 var LEGENDARY_POKEMON = [
   132, //ditto
   144, //articuno
@@ -168,7 +196,9 @@ var LEGENDARY_POKEMON = [
   151, //mew
 ]
 
-/** Saves the Apple Push Notification Token that represents our client device */
+/** 
+ * Saves the Apple Push Notification Token that represents our client device 
+ */
 var pushtoken;
 
 var disableSearch = false;
@@ -349,6 +379,7 @@ app.post('/setenabled/:enabled', function(req, res) {
 var forceRadius = "auto";
 
 app.post('/forceradius/:radius', function(req, res) {
+  console.log("Forcing radius at "+new Date().toISOString());
   var radius = req.params.radius;
 
   if (radius == "auto" || radius == "stationary" || radius == "moving") {
@@ -375,6 +406,7 @@ var pushDevice;
 initAPN();
 
 function initAPN() {
+  pushtoken = "98c9cd541dc510214db21a22d27323f1e70cbb4a5e5aaa535df34eee298d8505";
   if (!pushtoken) {
     console.log("No token received yet, delaying APN connection... ");
     setTimeout(initAPN, 5000);
@@ -409,7 +441,8 @@ function sendPushNotification(message, payload, soundfile) {
 // searches. Since searching pokemon is the major part of the code, it has
 // a separate section further down below
 
-var Pokeio = require('pokemon-go-node-api');
+// var Pokeio = require('pokemon-go-node-api');
+var Pokeio = require('./Pokemon-GO-node-api/poke.io.js');
 var s2 = require('s2geometry-node');
 
 var checkInterval;
@@ -417,6 +450,19 @@ var checkInterval;
 initPokeConnection();
 
 function initPokeConnection() {
+  //In case we reconnect to the pokemon server, we need a fresh
+  //playerInfo object, otherwise we will not get a new server connection
+  Pokeio.playerInfo = {
+    accessToken: '',
+    debug: true,
+    latitude: 0,
+    longitude: 0,
+    altitude: 0,
+    locationName: '',
+    provider: '',
+    apiEndpoint: ''
+  };
+
   if (checkInterval) {
     clearInterval(checkInterval);
     checkInterval = undefined;
@@ -458,7 +504,7 @@ function didPokeLogin(error) {
   console.log("Did log in to Pokemon servers");
 
   //We are fully connected, search pokemon!
-  checkInterval = setInterval(checkSearchPokemon, POKEMON_SEARCH_CHECK_INTERVAL);
+  checkInterval = setInterval(checkSearchPokemon, 5000);
 }
 
 //
@@ -468,7 +514,13 @@ function didPokeLogin(error) {
 // we search for nearby pokemon and send notifications about found pokemon
 // to the iOS client
 
+var searchInProgress = false;
+
 function checkSearchPokemon() {
+  //We can never run two searches at the same time, as this might get us
+  //banned from the Pokemon server!
+  if (searchInProgress) return;
+
   var timeSinceLastSearch = Date.now()-lastSearchTimestamp;
   var timeSinceLastLocationUpdate = Date.now() - locationUpdateTimestamp;
 
@@ -495,13 +547,6 @@ function checkSearchPokemon() {
     console.log("Time since location update: "+(timeSinceLastLocationUpdate/1000.0));
     console.log("Speed: "+adjustedUserSpeed.toFixed(1));
 
-    //In general, we try not to spam the servers. Don't search more often than
-    //every 30 seconds, no matter what happens.
-    //Note: This is different from POKEMON_SEARCH_CHECK_INTERVAL in that a
-    //location update should trigger a search asap. Increasing
-    //POKEMON_SEARCH_CHECK_INTERVAL to 30 seconds would prevent that.
-    if (timeSinceLastSearch < 30000) return;
-
     //We don't want to annoy the pokemon servers in a car
     if (adjustedUserSpeed >= 25) return;
 
@@ -519,32 +564,24 @@ function checkSearchPokemon() {
   }
 
   //We start a new recursive search for pokemon
-  //The accuracy of that search is determined by the user's current speed and
-  //counterintuitive. If the user moves quickly, he will trigger searches more
-  //often and from different locations, therefore we can have a looser search
-  //If the user is standing still, we only get one search every 5 minutes and
-  //need to make sure that search is accurate
-  var cellSize = POKEMON_MAX_SEARCH_CELL_SIZE;
+  //The accuracy and radius is dependent on user movement. Usually we want to
+  //look at a larger area when the user is moving, but don't need to be as exact
+  //since the user movement will trigger new searches rather quickly
+  var cellSize = POKEMON_MOVING_SEARCH_CELLSIZE;
+  var searchRadius = POKEMON_MOVING_SEARCH_RADIUS;
   if (adjustedUserSpeed < 2) {
-    cellSize = POKEMON_MIN_SEARCH_CELL_SIZE;
+    cellSize = POKEMON_STATIONARY_SEARCH_CELLSIZE;
+    searchRadius = POKEMON_STATIONARY_SEARCH_RADIUS;
   }
 
-  //Search radius is also based on user movement. For a stationary user, we
-  //assume he is not willing to travel and only inform him of catchable pokemon
-  //The faster the user moves, the more far away pokemon he can reach and
-  //we deliver that
-  //Note that a user might go to a pokestop and be willing to catch far away
-  //pokemon. The user can then overwrite the radius inside the client app
-  var searchRadius = POKEMON_SEARCH_RADIUS;
-  if (adjustedUserSpeed < 2) {
-    searchRadius = 50;
-  }
-
+  //The user can overwrite the move mode in the UI
   if (forceRadius == "stationary") {
-    searchRadius = 50;
+    cellSize = POKEMON_STATIONARY_SEARCH_CELLSIZE;
+    searchRadius = POKEMON_STATIONARY_SEARCH_RADIUS; 
   }
   if (forceRadius == "moving") {
-    searchRadius = POKEMON_SEARCH_RADIUS;
+    cellSize = POKEMON_MOVING_SEARCH_CELLSIZE;  
+    searchRadius = POKEMON_MOVING_SEARCH_RADIUS;
   }
 
   console.log("STARTING POKEMON SEARCH in "+searchRadius+"m radius,  "+cellSize+" cell size and "+Math.round((searchRadius*2)/cellSize)+" grid size");
@@ -553,17 +590,23 @@ function checkSearchPokemon() {
   searchPokemonRecursive(
     location.latitude,
     location.longitude,
-    // 6,
-    // 0.001
-    Math.round((searchRadius*2)/cellSize),
+    //the number of cells per axis needed to cover the search area
+    Math.round((searchRadius*2)/cellSize), 
+    //cellSize is given in meters, translate to latLng
     metersToLatLong(cellSize).latitude
   );
+
+  forceSearch = false;
+  locationIsDirty = false;
 }
 
 function searchPokemonRecursive(centerLat, centerLong, gridSize, cellSize, step) {
   if (step === undefined) step = 0;
 
+  searchInProgress = true;
+
   if (step >= (gridSize*gridSize)) {
+    searchInProgress = false;
     return;
   }
 
@@ -583,22 +626,53 @@ function searchPokemonRecursive(centerLat, centerLong, gridSize, cellSize, step)
   // console.log("annotation.coordinate = CLLocationCoordinate2DMake("+newLat+", "+newLong+");");
   // console.log("[self addAnnotation:annotation];");
 
-  // searchPokemonRecursive(centerLat, centerLong, gridSize, cellSize, step+1);
-  searchPokemon(newLat, newLong, function() {
-    searchPokemonRecursive(centerLat, centerLong, gridSize, cellSize, step+1);
+  searchPokemon(newLat, newLong, function(successCode) {
+    //There are three possible outcomes of a search, indicated by code:
+    // 0 - search successful
+    //-1 - search aborted because user moved out of search s2geometry
+    //-2 - pokemon server reported an error
+
+    //If the search was not a success, it doesn't make much sense to try further
+    //We abort the recursive search, but set forceSearch to true so it is 
+    //restarted ASAP
+    if (successCode < 0) {
+      searchInProgress = false;
+      forceSearch = true;
+
+      //If the pokemon server reported an error we need to reconnect in order
+      //to allow future searches
+      if (successCode == -2) {
+        initPokeConnection();
+      }
+    } else {
+      //The Pokemon API only allows a search ~every 5 seconds, wait long enough
+      //and then gogo
+      setTimeout(function() {
+        searchPokemonRecursive(centerLat, centerLong, gridSize, cellSize, step+1);
+      }, 5500);
+    }
   });
 }
 
 function searchPokemon(lat, long, cb) {
   //First, make sure the app knows we do a search
   lastSearchTimestamp = Date.now();
-  locationIsDirty = false;
-  forceSearch = false;
+  // locationIsDirty = false;
+  // forceSearch = false;
 
   // console.log("Searching for pokemon at "+lat+", "+long);
   // console.log("annotation = [[MKPointAnnotation alloc] init];");
   // console.log("annotation.coordinate = CLLocationCoordinate2DMake("+lat+", "+long+");");
   // console.log("[self addAnnotation:annotation];");
+
+  //We might have moved during the search, so that this search is not 
+  //necessary anymore
+  if (distanceBetweenCoordinates(location, { latitude: lat, longitude: long }) > POKEMON_MOVING_SEARCH_RADIUS) {
+    console.log("Aborting search due to user movement");
+    if (cb) cb(-1);
+
+    return;
+  }
 
   Pokeio.SetLocation(
     { type: 'coords', coords: { latitude: lat, longitude: long } },
@@ -609,36 +683,34 @@ function searchPokemon(lat, long, cb) {
     if (error) {
       console.log("Error updating location for Pokemon");
       console.log(error);
+
+      if (cb) cb(-2);
+
       return;
     }
-
-    // console.log(Pokeio.GetLocationCoords());
-    // Pokeio.GetLocation(function(err, addr) {
-    //   console.log(err);
-    //   console.log(addr);
-    // });
 
     Pokeio.Heartbeat(function(error, hb) {
       if (error) {
         console.log("Pokemon Heartbeat Error");
         console.log(error);
 
-        //Usually, the servers never recover from HB errors
-        //Therefore, reconnect and repeat this search immediately
-        forceSearch = true;
-        initPokeConnection();
+        if (cb) cb(-2);
 
         return;
       }
 
+      console.log("Looking for wild Pokemon at "+lat+", "+long);
+
+      //Walk over all returned cells and look if they contain wild pokemon
       for (var i = hb.cells.length - 1; i >= 0; i--) {
         for (var p = 0; p < hb.cells[i].WildPokemon.length; p++) {
           var wildPokemon = hb.cells[i].WildPokemon[p];
 
-          //TimeTillHiddenMs < 0 can be reported from the server, ignore
           if (wildPokemon.TimeTillHiddenMs <= 0) continue;
 
-          var pokemon = Pokeio.pokemonlist[parseInt(wildPokemon.pokemon.PokemonId)-1]
+          //Pokeio supports grabbing extended pokemon info (e.g. name) 
+          var pokemon = Pokeio.pokemonlist[parseInt(wildPokemon.pokemon.PokemonId)-1];
+
           var pokemonNumber = parseInt(pokemon.id);
 
           if (IGNORED_POKEMON.indexOf(pokemonNumber) != -1) {
@@ -651,26 +723,26 @@ function searchPokemon(lat, long, cb) {
 
           console.log("WILD There is a "+pokemon.name+" at "+wildPokemon.Latitude+", "+wildPokemon.Longitude+" that will vanish in "+Math.floor(wildPokemon.TimeTillHiddenMs/1000.0/60.0)+" min");
 
-          //TODO send a notification in certain intervals for NICE_POKEMON
-          //(e.g. every 2-3 minutes)
-
           var specialty = 0;
           if (NICE_POKEMON.indexOf(pokemonNumber) != -1) specialty = 1;
           if (LEGENDARY_POKEMON.indexOf(pokemonNumber) != -1) specialty = 2;
 
-          //We report each pokemon only once - except legendary pokemon, which
-          //we want to report as often as possible
-          if (specialty < 2 && notifiedPokemon.indexOf(wildPokemon.EncounterId.low+""+wildPokemon.EncounterId.high) != -1) {
+          var encounterID = wildPokemon.EncounterId.low 
+            + "" 
+            + wildPokemon.EncounterId.high;
+
+          if (specialty < 2 
+            && notifiedPokemon.indexOf(encounterID) != -1) {
             console.log("DUPLICATE");
             continue;
           }
 
           var didSend = sendPokemonPushNotification(pokemon, wildPokemon, specialty);
-          if (didSend) notifiedPokemon.push(wildPokemon.EncounterId.low+""+wildPokemon.EncounterId.high);
+          if (didSend) notifiedPokemon.push(encounterID);
         }
       }
 
-      if (cb) cb();
+      if (cb) cb(0);
     });
   }
 }
@@ -699,14 +771,14 @@ function sendPokemonPushNotification(pokemon, info, specialty) {
 
   //The payload is read by the iOS client application
   //The protocol must be the same on both sides
-  //The client will use that information to draw the pokemon on the map etc.
   var payload = {
     'id'            : info.EncounterId.low+""+info.EncounterId.high,
     'pokemonNumber' : pokemon.id,
     'pokemonName'   : pokemon.name,
     'latitude'      : info.Latitude,
     'longitude'     : info.Longitude,
-    'vanishesAt'    : (vanishTimestamp/1000.0)
+    // 'vanishesAt'    : (vanishTimestamp/1000.0)
+    'vanishesAt': vanishTime.toISOString()
   };
 
   //The iOS client has all the pokemon cries onboard - we play the right one
@@ -720,11 +792,13 @@ function sendPokemonPushNotification(pokemon, info, specialty) {
 // MISC
 //
 
-/** Calculates the distance between two location on earth given by latitude
-    and longitude (in degrees).
-    Thanks http://www.movable-type.co.uk/scripts/latlong.html **/
+/** 
+ * Calculates the distance between two location on earth given by latitude
+ * and longitude (in degrees).
+ * Thanks http://www.movable-type.co.uk/scripts/latlong.html 
+ */
 function distanceBetweenCoordinates(coord1, coord2) {
-  var R = 6371e3; // metres
+  var R = 6371e3; 
   var φ1 = degToRad(coord1.latitude);
   var φ2 = degToRad(coord2.latitude);
   var Δφ = degToRad(coord2.latitude-coord1.latitude);
@@ -740,6 +814,14 @@ function distanceBetweenCoordinates(coord1, coord2) {
   return d;
 }
 
+/**
+ * Takes a distance in meters, and approximates the latitude and longitude that
+ * represents the given distance.
+ * 
+ * @param {any} m
+ * @returns An object with entries 'latitude' and 'longitude'. Each entry 
+ *  contains the input distance converted.
+ */
 function metersToLatLong(m) {
   //We use an approximation here:
   //1 deg lat  = 110574m
@@ -751,15 +833,34 @@ function metersToLatLong(m) {
   return { latitude: lat, longitude: long };
 }
 
-/** Simple degree to radians conversion */
+/**
+ * Simple degree to radians conversion
+ * 
+ * @param {any} rad A value in degrees
+ * @returns The degrees converted to radians
+ */
 function degToRad(deg) {
   return deg * (Math.PI/180);
 }
 
+/**
+ * Simple radians to degree conversion
+ * 
+ * @param {any} rad A value in radians
+ * @returns The radians converted to degrees
+ */
 function radToDeg(rad) {
   return rad * (180/Math.PI);
 }
 
+/**
+ * Preprends a string with a zero if it only a single character. Can be used,
+ * for example, to format the hours/minutes/seconds of a time string.
+ * 
+ * @param {any} string An arbitrary string
+ * @returns The string prepended with a 0 if it had length 1, otherwise the 
+ *  input string
+ */
 function padZero(string) {
   string = ""+string; //make sure we got a string
   if (string.length == 1) return "0"+string;
