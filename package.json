@@ -1,0 +1,10 @@
+{
+  "name": "pokealert-server",
+  "version": "1.0.0",
+  "dependencies": {
+    "apn": "^1.7.8",
+    "body-parser": "^1.15.2",
+    "express": "^4.14.0",
+    "s2geometry-node": "^1.3.1"
+  }
+}
